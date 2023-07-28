@@ -199,6 +199,7 @@ if __name__ == '__main__':
     if opt.exp_name is not None:
         os.makedirs(f'./saved_models/{opt.exp_name}', exist_ok=True)
     else:
+        opt.exp_name = f"{opt.model}-{opt.dataset}"
         os.makedirs(f'./saved_models/{opt.model}-{opt.dataset}', exist_ok=True)
     
     with open(f'./saved_models/{opt.exp_name}/opt.txt', 'a') as opt_file:
