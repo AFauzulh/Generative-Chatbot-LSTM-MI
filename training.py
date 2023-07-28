@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 from nltk.translate.bleu_score import sentence_bleu
 from sklearn.model_selection import train_test_split
 
-from models.LSTM import Encoder, Decoder, Seq2Seq
+from models.BiLSTM import Encoder, Decoder, Seq2Seq
 
 from tqdm import tqdm
 import argparse
@@ -196,7 +196,11 @@ if __name__ == '__main__':
     RANDOM_SEED = opt.manualSeed
     dataset_dir = opt.dataset_path
     
-    os.makedirs(f'./saved_models/{opt.exp_name}', exist_ok=True)
+    if opt.exp_name is not None:
+        os.makedirs(f'./saved_models/{opt.exp_name}', exist_ok=True)
+    else:
+        os.makedirs(f'./saved_models/{opt.model}-{opt.dataset}', exist_ok=True)
+    
     with open(f'./saved_models/{opt.exp_name}/opt.txt', 'a') as opt_file:
         opt_log = '------------ Options -------------\n'
         args = vars(opt)
@@ -235,7 +239,7 @@ if __name__ == '__main__':
     df['questions_preprocessed'] = df['questions_preprocessed'].map(lambda x: pad_sequences(x, max_len))
     df['answers_preprocessed'] = df['answers_preprocessed'].map(lambda x: pad_sequences(x, max_len))
 
-    df_train, df_test = train_test_split(df, test_size=.2, random_state=RANDOM_SEED)
+    df_train, df_test = train_test_split(df, test_size=opt.split_ratio, random_state=RANDOM_SEED)
     df_train, df_val = train_test_split(df_train, test_size=.25, random_state=RANDOM_SEED)
     
     print(f"Train Data \t: {len(df_train)}")
@@ -302,7 +306,8 @@ if __name__ == '__main__':
             entity='alfirsa-lab',
             name=f"{opt.exp_name}"
         )
-    
+        
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3)
     best_val_loss = float('inf')
     for epoch in range(num_epochs):
         num_batch = 0
@@ -354,13 +359,15 @@ if __name__ == '__main__':
                 val_num_batch+=1
                 
         val_loss_ = val_batch_loss/val_num_batch
+        scheduler.step(val_loss_)
+        
         if val_loss_ < best_val_loss:
             torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_loss.pth')
             
         torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/model.pth')
         
         if opt.wandb_log:
-            wandb.log({"loss": train_loss_, "val_loss": val_loss_})
+            wandb.log({"Train Loss": train_loss_, "Validation Loss": val_loss_, "Validation Perplexity": np.exp(val_loss_.cpu().detach().numpy())})
         
         print(
                 f'Epochs: {epoch + 1} | Train Loss: {train_loss_:.3f} \
