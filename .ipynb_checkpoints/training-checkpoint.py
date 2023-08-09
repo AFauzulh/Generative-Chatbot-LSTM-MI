@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 from nltk.translate.bleu_score import sentence_bleu
 from sklearn.model_selection import train_test_split
 
-from models.BiLSTM import Encoder, Decoder, Seq2Seq
+from models.LSTMBahdanau import Encoder, Decoder, Seq2Seq
 
 from tqdm import tqdm
 import argparse
@@ -171,16 +171,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', help='Where to store logs and models')
     parser.add_argument('--dataset_path', required=True, help='path to dataset (csv)')
-    parser.add_argument('--manualSeed', type=int, default=77, help='for random seed setting')
+    parser.add_argument('--manualSeed', type=int, default=42, help='for random seed setting')
     parser.add_argument('--model', required=True, help='select model')
-    parser.add_argument('--batch_size', type=int, default=512, help='input batch size')
-    parser.add_argument('--hidden_size', type=int, default=1024, help='the size of the LSTM hidden state')
-    parser.add_argument('--embedding_dim', type=int, default=300, help='the size of the embedding dimension')
+    parser.add_argument('--batch_size', type=int, default=128, help='input batch size')
+    parser.add_argument('--hidden_size', type=int, default=768, help='the size of the LSTM hidden state')
+    parser.add_argument('--embedding_dim', type=int, default=768, help='the size of the embedding dimension')
     parser.add_argument('--dropout', type=float, default=0, help='dropout ratio')
     parser.add_argument('--num_layers', type=int, default=1, help='number of layer in RNN cell')
     parser.add_argument('--num_epochs', type=int, default=50, help='number of epochs to train for')
     parser.add_argument('--saved_model', default='', help="path to model to continue training")
-    parser.add_argument('--lr', type=float, default=0.001, help='learning rate, default=1.0 for Adadelta')
+    parser.add_argument('--lr', type=float, default=0.0001, help='learning rate, default=1.0 for Adadelta')
     parser.add_argument('--grad_clip', type=float, default=1.0, help='gradient clipping value. default=5')
     parser.add_argument('--split_ratio', type=float, default=0.1,
                         help='assign ratio for split dataset')
@@ -197,12 +197,12 @@ if __name__ == '__main__':
     dataset_dir = opt.dataset_path
     
     if opt.exp_name is not None:
-        os.makedirs(f'./saved_models/{opt.exp_name}', exist_ok=True)
+        os.makedirs(f'./saved_models/siet/{opt.exp_name}', exist_ok=True)
     else:
-        opt.exp_name = f"{opt.model}-{opt.dataset}"
-        os.makedirs(f'./saved_models/{opt.model}-{opt.dataset}', exist_ok=True)
+        opt.exp_name = f"{opt.model}-{opt.dataset}-{opt.max_length}"
+        os.makedirs(f'./saved_models/siet/{opt.model}-{opt.dataset}-{opt.max_length}', exist_ok=True)
     
-    with open(f'./saved_models/{opt.exp_name}/opt.txt', 'a') as opt_file:
+    with open(f'./saved_models/siet/{opt.exp_name}/opt.txt', 'a') as opt_file:
         opt_log = '------------ Options -------------\n'
         args = vars(opt)
         for k, v in args.items():
@@ -223,7 +223,7 @@ if __name__ == '__main__':
     question_tokenizer = tokenizer
     answer_tokenizer = tokenizer
     
-    with open(f'./saved_models/{opt.exp_name}/tokenizer.pickle', 'wb') as handle:
+    with open(f'./saved_models/siet/{opt.exp_name}/tokenizer.pickle', 'wb') as handle:
         pickle.dump(tokenizer, handle, protocol=pickle.HIGHEST_PROTOCOL)
     
     max_len = opt.max_length+2
@@ -241,10 +241,10 @@ if __name__ == '__main__':
     df['answers_preprocessed'] = df['answers_preprocessed'].map(lambda x: pad_sequences(x, max_len))
 
     df_train, df_test = train_test_split(df, test_size=opt.split_ratio, random_state=RANDOM_SEED)
-    df_train, df_val = train_test_split(df_train, test_size=.25, random_state=RANDOM_SEED)
+#     df_train, df_val = train_test_split(df_train, test_size=.25, random_state=RANDOM_SEED)
     
     print(f"Train Data \t: {len(df_train)}")
-    print(f"Val Data \t: {len(df_val)}")
+#     print(f"Val Data \t: {len(df_val)}")
     print(f"Test Data\t: {len(df_test)}\n")
     
     input_tensor_train = df_train['questions_preprocessed'].values.tolist()
@@ -253,12 +253,12 @@ if __name__ == '__main__':
     input_tensor_test = df_test['questions_preprocessed'].values.tolist()
     target_tensor_test = df_test['answers_preprocessed'].values.tolist()
     
-    input_tensor_val = df_val['questions_preprocessed'].values.tolist()
-    target_tensor_val = df_val['answers_preprocessed'].values.tolist()
+#     input_tensor_val = df_val['questions_preprocessed'].values.tolist()
+#     target_tensor_val = df_val['answers_preprocessed'].values.tolist()
 
     train_data = MyData(input_tensor_train, target_tensor_train)
     test_data = MyData(input_tensor_test, target_tensor_test)
-    val_data = MyData(input_tensor_val, target_tensor_val)
+#     val_data = MyData(input_tensor_val, target_tensor_val)
     
     if torch.cuda.is_available():       
         device = torch.device("cuda")
@@ -284,7 +284,7 @@ if __name__ == '__main__':
     
     train_dataset = DataLoader(train_data, batch_size = batch_size, drop_last=True, shuffle=True)
     test_dataset = DataLoader(test_data, batch_size = batch_size, drop_last=True, shuffle=True)
-    val_dataset = DataLoader(val_data, batch_size = batch_size, drop_last=True, shuffle=True)
+#     val_dataset = DataLoader(val_data, batch_size = batch_size, drop_last=True, shuffle=True)
     
     encoder_net = Encoder(input_size_encoder, encoder_embedding_size, hidden_size, 
                       num_layers, enc_dropout, pretrained_word_embedding=False, embedding_matrix=None, freeze=False).to(device)
@@ -303,12 +303,12 @@ if __name__ == '__main__':
     
     if opt.wandb_log:
         wandb.init(
-            project="tesis-chatbot-siet-percobaan",
+            project="siet-2023-attention-comparison",
             entity='alfirsa-lab',
             name=f"{opt.exp_name}"
         )
         
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3)
+#     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3)
     best_val_loss = float('inf')
     for epoch in range(num_epochs):
         num_batch = 0
@@ -348,7 +348,7 @@ if __name__ == '__main__':
             train_loss_ = batch_loss/num_batch
         
         with torch.no_grad():
-            for (batch_idx, (X_val, y_val, input_len)) in enumerate(val_dataset):
+            for (batch_idx, (X_val, y_val, input_len)) in enumerate(test_dataset):
                 X, y, input_lengths = sort_within_batch(X_val, y_val, input_len)
                 X = X.permute(1,0)
                 y = y.permute(1,0)
@@ -366,12 +366,12 @@ if __name__ == '__main__':
                 val_num_batch+=1
                 
         val_loss_ = val_batch_loss/val_num_batch
-        scheduler.step(val_loss_)
+#         scheduler.step(val_loss_)
         
         if val_loss_ < best_val_loss:
-            torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_loss.pth')
+            torch.save(model.state_dict(), f'./saved_models/siet/{opt.exp_name}/best_loss.pth')
             
-        torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/model.pth')
+        torch.save(model.state_dict(), f'./saved_models/siet/{opt.exp_name}/model.pth')
         
         if opt.wandb_log:
             wandb.log({"Train Loss": train_loss_, "Validation Loss": val_loss_, "Validation Perplexity": np.exp(val_loss_.cpu().detach().numpy())})

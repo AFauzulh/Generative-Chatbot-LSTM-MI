@@ -15,11 +15,16 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModel
+
 import matplotlib.pyplot as plt
 from nltk.translate.bleu_score import sentence_bleu
 from sklearn.model_selection import train_test_split
 
-from models.LSTMBahdanau import Encoder, Decoder, Seq2Seq
+from models.LSTMSelfAttn import Encoder, Decoder, Seq2Seq
+# from models.LSTMBahdanauImproved import Encoder, Decoder, Seq2Seq
+# from models.LSTMMAImproved import Encoder, Decoder, Seq2Seq
 
 from tqdm import tqdm
 import argparse
@@ -190,6 +195,7 @@ if __name__ == '__main__':
     parser.add_argument('--wandb_log', action='store_true', help='using wandb')
     parser.add_argument('--transformer', action='store_true', help='using Transformer seq2seq model')
     parser.add_argument('--resume_train', action='store_true', help='resume training')
+    parser.add_argument('--sbert', action='store_true', help='using pretrained word embedding from sbert')
     
     opt = parser.parse_args()
 
@@ -239,13 +245,14 @@ if __name__ == '__main__':
 
     df['questions_preprocessed'] = df['questions_preprocessed'].map(lambda x: pad_sequences(x, max_len))
     df['answers_preprocessed'] = df['answers_preprocessed'].map(lambda x: pad_sequences(x, max_len))
-
+    
     df_train, df_test = train_test_split(df, test_size=opt.split_ratio, random_state=RANDOM_SEED)
 #     df_train, df_val = train_test_split(df_train, test_size=.25, random_state=RANDOM_SEED)
     
     print(f"Train Data \t: {len(df_train)}")
 #     print(f"Val Data \t: {len(df_val)}")
     print(f"Test Data\t: {len(df_test)}\n")
+    raise Exception("Interrupt :)")
     
     input_tensor_train = df_train['questions_preprocessed'].values.tolist()
     target_tensor_train = df_train['answers_preprocessed'].values.tolist()
@@ -260,6 +267,31 @@ if __name__ == '__main__':
     test_data = MyData(input_tensor_test, target_tensor_test)
 #     val_data = MyData(input_tensor_val, target_tensor_val)
     
+    embedding_matrix = None
+    if opt.sbert:
+        embedding_sbert_name = "sentence-transformers/all-MiniLM-L6-v2"
+        print(f"Loading SBERT Model {embedding_sbert_name}")
+        embedding_tokenizer = AutoTokenizer.from_pretrained(embedding_sbert_name)
+        embedding_model = SentenceTransformer(embedding_sbert_name, device='cuda')
+        pretrained_word_embedding_dimensions = 384
+        for param in embedding_model.parameters():
+            param.requires_grad = False
+        
+        vocab = tokenizer.index2word
+        vocab_size = len(vocab)
+        embedding_matrix = np.zeros((vocab_size, pretrained_word_embedding_dimensions))
+        
+        print("Creating pretrained word embedding matrix . . .")
+        
+        for i, word in tqdm(tokenizer.index2word.items()):
+            try:
+                embedding_vector = embedding_model.encode(word)
+                if embedding_vector is not None:
+                    embedding_matrix[i] = embedding_vector
+            except:
+                print(f"embedding for word '{word}' not found!")
+                raise Exception("Pretrained Word EMbedding Failed :)")
+        
     if torch.cuda.is_available():       
         device = torch.device("cuda")
         print(f'There are {torch.cuda.device_count()} GPU(s) available.')
@@ -286,13 +318,23 @@ if __name__ == '__main__':
     test_dataset = DataLoader(test_data, batch_size = batch_size, drop_last=True, shuffle=True)
 #     val_dataset = DataLoader(val_data, batch_size = batch_size, drop_last=True, shuffle=True)
     
-    encoder_net = Encoder(input_size_encoder, encoder_embedding_size, hidden_size, 
-                      num_layers, enc_dropout, pretrained_word_embedding=False, embedding_matrix=None, freeze=False).to(device)
+    if opt.sbert:
+        print("Create model using pretrained SBERT word embedding")
+        encoder_net = Encoder(input_size_encoder, encoder_embedding_size, hidden_size, 
+                      num_layers, enc_dropout, pretrained_word_embedding=True, embedding_matrix=embedding_matrix, freeze=True).to(device)
 
-    decoder_net = Decoder(input_size_decoder, decoder_embedding_size, hidden_size, 
-                          output_size, num_layers, dec_dropout, pretrained_word_embedding=False, embedding_matrix=None, freeze=False).to(device)
+        decoder_net = Decoder(input_size_decoder, decoder_embedding_size, hidden_size, 
+                              output_size, num_layers, dec_dropout, pretrained_word_embedding=True, embedding_matrix=embedding_matrix, freeze=True).to(device)
+        
+        model = Seq2Seq(encoder_net, decoder_net, input_size_decoder).to(device)
+    else:
+        encoder_net = Encoder(input_size_encoder, encoder_embedding_size, hidden_size, 
+                          num_layers, enc_dropout, pretrained_word_embedding=False, embedding_matrix=None, freeze=False).to(device)
 
-    model = Seq2Seq(encoder_net, decoder_net, input_size_decoder).to(device)
+        decoder_net = Decoder(input_size_decoder, decoder_embedding_size, hidden_size, 
+                              output_size, num_layers, dec_dropout, pretrained_word_embedding=False, embedding_matrix=None, freeze=False).to(device)
+
+        model = Seq2Seq(encoder_net, decoder_net, input_size_decoder).to(device)
     
     pad_idx = answer_tokenizer.word2index["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
@@ -316,6 +358,7 @@ if __name__ == '__main__':
         batch_loss = 0
         val_batch_loss = 0
         training_time = 0
+#         batch_attn_reg_loss = 0
         
         for (batch_idx, (X_train, y_train, input_len)) in enumerate(bar := tqdm(train_dataset)):
             X, y, input_lengths = sort_within_batch(X_train, y_train, input_len)
@@ -324,29 +367,38 @@ if __name__ == '__main__':
             inp_data = X.to(device)
             target = y.to(device)
             
-            output = model(inp_data, target, input_lengths)
+            output, intermediate_outputs = model(inp_data, target, input_lengths)
+            
+            attention_reg = 0
+#             for io in intermediate_outputs:
+#                 mean_attn_w = torch.mean(torch.sum(io.squeeze(2), dim=1))
+#                 attention_reg += 0.001 * torch.log(1 + (mean_attn_w)**2)
+
+#             for io in intermediate_outputs:
+#                 io = io.squeeze(2) # [N, seq_len]
+#                 hi = io * torch.log(io)
+#                 hi = -1 * torch.mean(hi)
+#                 attention_reg += 0.001 * hi
+        
             output = output[1:].reshape(-1, output.shape[2])
             target = target[1:].reshape(-1)
             
             optimizer.zero_grad()
+#             loss = loss_function(target, output) + attention_reg
             loss = loss_function(target, output)
-            # batch_loss += loss.detach()
-            batch_loss += loss
+            batch_loss += loss.detach()
+#             batch_attn_reg_loss += attention_reg.detach()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
             optimizer.step()
 
-#             bar.set_description(f'Train Seq2Seq Model '
-#                                                  f'[train_loss={loss.detach():.4f}'
-#                                                  )
-            
             bar.set_description(f'Train Seq2Seq Model '
-                                                 f'[train_loss={loss:.4f}'
+                                                 f'[train_loss={loss.detach():.4f}'
                                                  )
-            
             num_batch+=1
             train_loss_ = batch_loss/num_batch
-        
+#             attn_loss_ = batch_attn_reg_loss/num_batch
+            
         with torch.no_grad():
             for (batch_idx, (X_val, y_val, input_len)) in enumerate(test_dataset):
                 X, y, input_lengths = sort_within_batch(X_val, y_val, input_len)
@@ -355,7 +407,7 @@ if __name__ == '__main__':
                 
                 inp_data = X.to(device)
                 target = y.to(device)
-                output = model(inp_data, target, input_lengths)
+                output, _ = model(inp_data, target, input_lengths)
                 
                 output = output[1:].reshape(-1, output.shape[2])
                 target = target[1:].reshape(-1)
@@ -378,7 +430,12 @@ if __name__ == '__main__':
         
         print(
                 f'Epochs: {epoch + 1} | Train Loss: {train_loss_:.3f} \
-                | Val Loss: {val_loss_:.3f} | Val PPL: {np.exp(val_loss_.cpu().detach().numpy()):.3f} \n')
+                | Val Loss: {val_loss_:.3f} | Val PPL: {np.exp(val_loss_.cpu().detach().numpy()):.3f}\n')
+        
+#         print(
+#                 f'Epochs: {epoch + 1} | Train Loss: {train_loss_:.3f} \
+#                 | Val Loss: {val_loss_:.3f} | Val PPL: {np.exp(val_loss_.cpu().detach().numpy()):.3f} \
+#                 | Attention Loss: {attn_loss_}.3f\n')
     
     if opt.wandb_log:
         wandb.finish()
