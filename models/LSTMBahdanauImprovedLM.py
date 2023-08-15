@@ -22,6 +22,8 @@ class Encoder(nn.Module):
     self.embedding = nn.Embedding(input_size, embedding_size)
 
     self.rnn = nn.LSTM(embedding_size, hidden_size, num_layers, dropout=p)
+    self.lm_out = nn.Linear(hidden_size, input_size)
+    self.softmax = nn.LogSoftmax(dim=-1)
 
   def forward(self, x, lens):
     # x shape: (seq_length, N), N ==> batch size
@@ -32,8 +34,10 @@ class Encoder(nn.Module):
     
     encoder_states, (hidden, cell) = self.rnn(embedding)
     encoder_states, _ = pad_packed_sequence(encoder_states)
-
-    return encoder_states, hidden, cell
+    lps = self.lm_out(hidden)
+    lps = self.softmax(lps)
+    
+    return encoder_states, hidden, cell, lps
 
 class Decoder(nn.Module):
   def __init__(self, input_size, embedding_size, hidden_size, output_size, 
@@ -52,34 +56,39 @@ class Decoder(nn.Module):
     self.rnn = nn.LSTM(embedding_size + hidden_size, hidden_size, num_layers, dropout=p)
     self.fc = nn.Linear(hidden_size, output_size)
 
-    self.Q = nn.Linear(self.hidden_size, self.hidden_size, bias=False) # encoder states
-    self.K = nn.Linear(self.hidden_size, self.hidden_size, bias=False) # encoder states
-    self.V = nn.Linear(self.hidden_size, self.hidden_size, bias=False) # encoder states
-    self.softmax = nn.Softmax(dim=-1)
+    self.W1 = nn.Linear(self.hidden_size, self.hidden_size)
+    self.W2 = nn.Linear(self.hidden_size, self.hidden_size)
+    self.V = nn.Linear(self.hidden_size, 1)
     self.relu = nn.ReLU()
 
   def forward(self, x, encoder_states, hidden, cell):
     intermediate_outputs = []
     # x shape = (N) tapi kita butuh (1, N) karena decoder hanya predict 1 kata tiap predict
     x = x.unsqueeze(0)
-    encoder_states = encoder_states.permute(1,0,2) # [N, seq_len, hidden] 
-    hidden = hidden.permute(1,0,2) # [N, 1, hidden]
 
-    query = self.Q(hidden)    
-    key = self.K(encoder_states)
-    values = self.V(encoder_states)
+    encoder_states = encoder_states.permute(1, 0, 2)
+    hidden_with_time_axis = hidden.permute(1, 0, 2)
+
+    attention_score = self.W1(encoder_states) + self.W2(hidden_with_time_axis)
+    attention_score = torch.tanh(attention_score)
+
+    attention_weights = self.V(attention_score)
+    # attention_weights_relu = self.relu(attention_weights)
+    # intermediate_outputs.append(attention_weights_relu)
+    # attention_weights_relu = attention_weights
+    # intermediate_outputs.append(attention_weights_relu)
     
-    attention_weights = torch.bmm(query, key.transpose(1,2)) / (key.shape[-1] ** 0.5)
-    attention_weights = self.softmax(attention_weights) # [N, 1, seq_len]
+    attention_weights = torch.softmax(attention_weights, dim=1)
     intermediate_outputs.append(attention_weights)
-    context_vector = torch.bmm(attention_weights, values)
     
+    context_vector = attention_weights * encoder_states
+    context_vector = torch.sum(context_vector, dim=1)
+
     embedding = self.dropout(self.embedding(x))
     # embedding shape = (1, N, embedding_size)
-    
-    embedding = torch.cat((context_vector.permute(1,0,2), embedding), dim=-1)
-    
-    hidden = hidden.permute(1,0,2)
+
+    embedding = torch.cat((context_vector.unsqueeze(1).permute(1,0,2), embedding), dim=-1)
+
     outputs, (hidden, cell) = self.rnn(embedding, (hidden, cell))
     # outputs shape = (1, N, hidden_size)
 
@@ -97,6 +106,8 @@ class Seq2Seq(nn.Module):
     self.encoder = encoder
     self.decoder = decoder
     self.vocab_len = vocab_len
+    
+    self.softmax = nn.LogSoftmax(dim=-1)
 
   def forward(self, source, target, input_len, teacher_force_ratio=.5):
     # source and target shape = (target_len, N)
@@ -107,18 +118,25 @@ class Seq2Seq(nn.Module):
 
     outputs = torch.zeros(target_len, batch_size, target_vocabulary_size).to(device)
 
-    encoder_states, hidden, cell = self.encoder(source, input_len)
+    encoder_states, hidden, cell, lps = self.encoder(source, input_len)
     # ambil start token
     x = target[0]
 
     for t in range(1, target_len):
       output, hidden, cell, attention_weights, intermediate_outputs = self.decoder(x, encoder_states, hidden, cell)
-
       outputs[t] = output
       # output shape = (N, answer_vocab_size)
-
       best_guess = output.argmax(1)
 
       x = target[t] if random.random() < teacher_force_ratio else best_guess
-
+      # output = output - (0.001 * lps)
+      
+      # print(f"[LPS] {lps[-1].shape}")
+      # print(f"[output] {output.shape}")
+      # raise Exception("Interrupt")
+      
+      output = self.softmax(output)
+      output = output - lps[-1]
+      # output = -1 * output
+        
     return outputs, intermediate_outputs

@@ -23,7 +23,7 @@ from nltk.translate.bleu_score import sentence_bleu
 from sklearn.model_selection import train_test_split
 
 # from models.LSTMSelfAttn import Encoder, Decoder, Seq2Seq
-from models.LSTMBahdanauImproved import Encoder, Decoder, Seq2Seq
+from models.LSTMBahdanauImprovedLM import Encoder, Decoder, Seq2Seq
 # from models.LSTMMAImproved import Encoder, Decoder, Seq2Seq
 
 from tqdm import tqdm
@@ -201,6 +201,7 @@ if __name__ == '__main__':
 
     RANDOM_SEED = opt.manualSeed
     dataset_dir = opt.dataset_path
+    os.environ["WANDB_DATA_DIR"] = './wandb_data'
     
     if opt.exp_name is not None:
         os.makedirs(f'./saved_models/siet/{opt.exp_name}', exist_ok=True)
@@ -224,6 +225,19 @@ if __name__ == '__main__':
     
     df = pd.read_csv(opt.dataset_path)
     df = df.dropna()
+    
+    # FACTORY DATASET ONLY
+    df['questions'] = df['questions'].apply(str)
+    df['answers'] = df['answers'].apply(str)
+
+    df['questions'] = df['questions'].apply(normalize)
+    df['answers'] = df['answers'].apply(normalize)
+
+    df['questions'] = df['questions'].apply(remove_non_letter)
+    df['answers'] = df['answers'].apply(remove_non_letter)
+
+    df['questions'] = df['questions'].apply(remove_whitespace)
+    df['answers'] = df['answers'].apply(remove_whitespace)
     
     tokenizer = Tokenizer(pd.concat([df['questions'], df['answers']], axis=0).values, min_freq=1)
     question_tokenizer = tokenizer
@@ -338,6 +352,7 @@ if __name__ == '__main__':
     
     pad_idx = answer_tokenizer.word2index["<PAD>"]
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
+    # criterion = nn.NLLLoss(ignore_index=pad_idx)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
     gc.collect()
@@ -384,8 +399,8 @@ if __name__ == '__main__':
             target = target[1:].reshape(-1)
             
             optimizer.zero_grad()
-            loss = loss_function(target, output) + attention_reg
-            # loss = loss_function(target, output)
+            # loss = loss_function(target, output) + attention_reg
+            loss = loss_function(target, output)
             batch_loss += loss.detach()
 #             batch_attn_reg_loss += attention_reg.detach()
             loss.backward()

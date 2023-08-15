@@ -191,7 +191,66 @@ def respond_only_lstm_attn_reg(model, sentence, question, answer, device, max_le
       else:
         text_to_indices.append(question.word2index['<UNK>'])
     # text_to_indices = [question.word2index[token] for token in tokens]
-    sentence_length = len(text_to_indices)
+    if len(text_to_indices) > max_length:
+        sentence_length = max_length
+    else:
+        sentence_length = len(text_to_indices)
+
+    text_to_indices = pad_sequences(text_to_indices, max_length)
+    
+    # Convert to Tensor
+    sentence_tensor = torch.LongTensor(text_to_indices).unsqueeze(1).to(device)
+    sentence_length = torch.tensor([sentence_length])
+    # Build encoder hidden, cell state
+
+    with torch.no_grad():
+        encoder_states, hidden, cell = model.encoder(sentence_tensor, sentence_length)
+
+    outputs = [answer.word2index["<sos>"]]
+
+    for _ in range(max_length):
+        previous_word = torch.LongTensor([outputs[-1]]).to(device)
+
+        with torch.no_grad():
+            output, hidden, cell, _, _ = model.decoder(previous_word, encoder_states, hidden, cell)
+            best_guess = output.argmax(1).item()
+
+        outputs.append(best_guess)
+
+        # Model predicts it's the end of the sentence
+        if output.argmax(1).item() == answer.word2index["<eos>"]:
+            break
+
+    answer_token = [answer.index2word[idx] for idx in outputs]
+
+    return ' '.join(answer_token[1:-1])
+
+def respond_only_lstm_attn_reg_lm(model, sentence, question, answer, device, max_length):
+    if type(sentence) == str:
+        sentence = normalize(sentence)
+        sentence = remove_non_letter(sentence)
+        sentence = remove_whitespace(sentence)
+
+        tokens = [token.lower() for token in sentence.split(' ')]
+    else:
+        tokens = [token.lower() for token in sentence]
+
+    tokens.insert(0, '<sos>')
+    tokens.append('<eos>')
+
+    # Go through each question token and convert to an index
+    text_to_indices = []
+    for token in tokens:
+      if token in question.word2index.keys():
+        text_to_indices.append(question.word2index[token])
+      else:
+        text_to_indices.append(question.word2index['<UNK>'])
+    # text_to_indices = [question.word2index[token] for token in tokens]
+    if len(text_to_indices) > max_length:
+        sentence_length = max_length
+    else:
+        sentence_length = len(text_to_indices)
+        
     text_to_indices = pad_sequences(text_to_indices, max_length)
 
     # Convert to Tensor
@@ -200,7 +259,7 @@ def respond_only_lstm_attn_reg(model, sentence, question, answer, device, max_le
     # Build encoder hidden, cell state
 
     with torch.no_grad():
-        encoder_states, hidden, cell = model.encoder(sentence_tensor, sentence_length)
+        encoder_states, hidden, cell, _ = model.encoder(sentence_tensor, sentence_length)
 
     outputs = [answer.word2index["<sos>"]]
 
