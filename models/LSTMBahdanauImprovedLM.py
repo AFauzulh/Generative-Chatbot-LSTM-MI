@@ -124,7 +124,16 @@ class Seq2Seq(nn.Module):
 
     for t in range(1, target_len):
       output, hidden, cell, attention_weights, intermediate_outputs = self.decoder(x, encoder_states, hidden, cell)
+      # output = self.softmax(output)
+      # output = output - lps[-1]
+      
       outputs[t] = output
+    
+      #====================v2====================
+      output = self.softmax(output)
+      output = output - lps[-1]
+      #==========================================
+        
       # output shape = (N, answer_vocab_size)
       best_guess = output.argmax(1)
 
@@ -135,8 +144,11 @@ class Seq2Seq(nn.Module):
       # print(f"[output] {output.shape}")
       # raise Exception("Interrupt")
       
-      output = self.softmax(output)
-      output = output - lps[-1]
+      #====================v1====================
+      # output = self.softmax(output)
+      # output = output - lps[-1]
+      #==========================================
+      
       # output = -1 * output
-        
+    
     return outputs, intermediate_outputs
